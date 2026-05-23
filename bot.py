@@ -22,13 +22,19 @@ SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     "DOGEUSDT", "AVAXUSDT", "MATICUSDT", "LINKUSDT", "ADAUSDT"
 ]
-INTERVAL        = "15"      # timeframe in minuti
+INTERVAL        = "15"   # timeframe in minuti
 EMA_FAST        = 9
 EMA_SLOW        = 21
-VOLUME_MULT     = 2.0       # spike volume: 2x la media
-ORDER_USDT      = 20        # dimensione ordine in USDT
-SCAN_INTERVAL   = 60        # secondi tra ogni scansione
-CATEGORY        = "spot"    # "spot" o "linear" per futures
+VOLUME_MULT     = 2.0    # spike volume: 2x la media
+ORDER_USDT      = 20     # dimensione ordine in USDT
+SCAN_INTERVAL   = 60     # secondi tra ogni scansione
+CATEGORY        = "spot"
+
+# ATR settings
+ATR_PERIOD      = 14
+ATR_SL_MULT     = 1.5   # SL = prezzo ± 1.5x ATR
+ATR_TP_MULT     = 3.0   # TP = prezzo ± 3.0x ATR  (risk/reward 1:2)
+MONITOR_INTERVAL = 30   # secondi tra i check SL/TP
 
 # ── Bybit client ─────────────────────────────────────────────────────────────
 session = HTTP(
@@ -40,6 +46,10 @@ session = HTTP(
 # ── Pending orders (in attesa di conferma Telegram) ──────────────────────────
 pending_orders: dict[str, dict] = {}
 
+# ── Posizioni aperte da monitorare per SL/TP ─────────────────────────────────
+open_positions: dict[str, dict] = {}
+# Struttura: { symbol: { signal, entry_price, qty, sl, tp, order_id } }
+
 
 def get_klines(symbol: str) -> pd.DataFrame | None:
     """
@@ -47,14 +57,12 @@ def get_klines(symbol: str) -> pd.DataFrame | None:
     Bybit viene usato solo per eseguire gli ordini.
     """
     try:
-        # Mappa simboli Bybit → Kraken
         symbol_map = {
             "BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD",
             "BNBUSDT": "BNBUSD", "XRPUSDT": "XRPUSD", "DOGEUSDT": "DOGEUSD",
             "AVAXUSDT": "AVAXUSD", "MATICUSDT": "POLUSD", "LINKUSDT": "LINKUSD",
             "ADAUSDT": "ADAUSD"
         }
-        # Mappa intervallo minuti → Kraken (in minuti)
         interval_map = {
             "1": 1, "3": 3, "5": 5, "15": 15,
             "30": 30, "60": 60, "120": 120, "240": 240,
@@ -75,7 +83,6 @@ def get_klines(symbol: str) -> pd.DataFrame | None:
             logger.error(f"Kraken error {symbol}: {result['error']}")
             return None
 
-        # Kraken restituisce {pair: [[time, open, high, low, close, vwap, volume, count]]}
         pair_key = list(result["result"].keys())[0]
         data = result["result"][pair_key]
         if not data:
@@ -90,52 +97,81 @@ def get_klines(symbol: str) -> pd.DataFrame | None:
         return None
 
 
+def calc_atr(df: pd.DataFrame) -> float:
+    """Calcola l'ATR (Average True Range) sulle ultime N candele."""
+    high = df["high"]
+    low  = df["low"]
+    close_prev = df["close"].shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - close_prev).abs(),
+        (low  - close_prev).abs()
+    ], axis=1).max(axis=1)
+    return tr.rolling(ATR_PERIOD).mean().iloc[-1]
+
+
 def check_signal(df: pd.DataFrame) -> str | None:
-    """
-    Strategia: EMA crossover + spike di volume.
-    Ritorna 'BUY', 'SELL' oppure None.
-    """
+    """Strategia: EMA crossover + spike di volume."""
     df["ema_fast"] = df["close"].ewm(span=EMA_FAST, adjust=False).mean()
     df["ema_slow"] = df["close"].ewm(span=EMA_SLOW, adjust=False).mean()
     df["vol_ma"]   = df["volume"].rolling(20).mean()
 
     prev = df.iloc[-2]
     curr = df.iloc[-1]
-
     volume_spike = curr["volume"] > df["vol_ma"].iloc[-1] * VOLUME_MULT
 
-    # Crossover rialzista
     if prev["ema_fast"] < prev["ema_slow"] and curr["ema_fast"] > curr["ema_slow"] and volume_spike:
         return "BUY"
-
-    # Crossover ribassista
     if prev["ema_fast"] > prev["ema_slow"] and curr["ema_fast"] < curr["ema_slow"] and volume_spike:
         return "SELL"
-
     return None
 
 
-async def send_signal(app: Application, symbol: str, signal: str, price: float) -> None:
-    """Manda il segnale su Telegram con bottoni Esegui / Salta."""
+def get_current_price(symbol: str) -> float | None:
+    """Ottieni il prezzo corrente da Kraken."""
+    try:
+        symbol_map = {
+            "BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD",
+            "BNBUSDT": "BNBUSD", "XRPUSDT": "XRPUSD", "DOGEUSDT": "DOGEUSD",
+            "AVAXUSDT": "AVAXUSD", "MATICUSDT": "POLUSD", "LINKUSDT": "LINKUSD",
+            "ADAUSDT": "ADAUSD"
+        }
+        kraken_symbol = symbol_map.get(symbol)
+        if not kraken_symbol:
+            return None
+        url = "https://api.kraken.com/0/public/Ticker"
+        resp = requests.get(url, params={"pair": kraken_symbol}, timeout=10)
+        result = resp.json()
+        pair_key = list(result["result"].keys())[0]
+        return float(result["result"][pair_key]["c"][0])
+    except Exception as e:
+        logger.error(f"Errore get_current_price {symbol}: {e}")
+        return None
+
+
+async def send_signal(app: Application, symbol: str, signal: str, price: float, sl: float, tp: float) -> None:
+    """Manda il segnale su Telegram con SL/TP calcolati da ATR."""
     emoji = "🟢" if signal == "BUY" else "🔴"
     text = (
         f"{emoji} *{signal} Signal — {symbol}*\n\n"
-        f"💰 Prezzo attuale: `${price:,.4f}`\n"
-        f"📊 Timeframe: {INTERVAL}m\n"
-        f"📐 Strategia: EMA {EMA_FAST}/{EMA_SLOW} + Volume spike\n"
+        f"💰 Prezzo: `${price:,.4f}`\n"
+        f"🛑 Stop Loss: `${sl:,.4f}`\n"
+        f"🎯 Take Profit: `${tp:,.4f}`\n"
+        f"📊 Timeframe: {INTERVAL}m | ATR x{ATR_SL_MULT}/{ATR_TP_MULT}\n"
         f"💵 Ordine: ~${ORDER_USDT} USDT\n\n"
         f"Vuoi eseguire questo trade?"
     )
 
     order_id = f"{symbol}_{signal}_{int(asyncio.get_event_loop().time())}"
-    pending_orders[order_id] = {"symbol": symbol, "signal": signal, "price": price}
+    pending_orders[order_id] = {
+        "symbol": symbol, "signal": signal,
+        "price": price, "sl": sl, "tp": tp
+    }
 
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Esegui", callback_data=f"exec_{order_id}"),
-            InlineKeyboardButton("❌ Salta",  callback_data=f"skip_{order_id}"),
-        ]
-    ])
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Esegui", callback_data=f"exec_{order_id}"),
+        InlineKeyboardButton("❌ Salta",  callback_data=f"skip_{order_id}"),
+    ]])
 
     await app.bot.send_message(
         chat_id=TELEGRAM_CHAT_ID,
@@ -143,7 +179,7 @@ async def send_signal(app: Application, symbol: str, signal: str, price: float) 
         parse_mode="Markdown",
         reply_markup=keyboard,
     )
-    logger.info(f"Segnale inviato: {signal} {symbol} @ {price}")
+    logger.info(f"Segnale inviato: {signal} {symbol} @ {price} | SL={sl:.4f} TP={tp:.4f}")
 
 
 def execute_order(symbol: str, signal: str, price: float) -> dict:
@@ -164,6 +200,66 @@ def execute_order(symbol: str, signal: str, price: float) -> dict:
         return {"error": str(e)}
 
 
+def close_position(symbol: str, signal: str, qty: float) -> dict:
+    """Chiude la posizione aperta con ordine market inverso."""
+    close_side = "Sell" if signal == "BUY" else "Buy"
+    try:
+        resp = session.place_order(
+            category=CATEGORY,
+            symbol=symbol,
+            side=close_side,
+            orderType="Market",
+            qty=str(qty),
+        )
+        return resp
+    except Exception as e:
+        logger.error(f"Errore chiusura {symbol}: {e}")
+        return {"error": str(e)}
+
+
+async def monitor_positions(app: Application) -> None:
+    """Loop che monitora SL/TP per ogni posizione aperta."""
+    while True:
+        await asyncio.sleep(MONITOR_INTERVAL)
+        if not open_positions:
+            continue
+
+        for symbol, pos in list(open_positions.items()):
+            price = get_current_price(symbol)
+            if price is None:
+                continue
+
+            hit_sl = (pos["signal"] == "BUY"  and price <= pos["sl"]) or \
+                     (pos["signal"] == "SELL" and price >= pos["sl"])
+            hit_tp = (pos["signal"] == "BUY"  and price >= pos["tp"]) or \
+                     (pos["signal"] == "SELL" and price <= pos["tp"])
+
+            if hit_sl or hit_tp:
+                reason = "🛑 STOP LOSS" if hit_sl else "🎯 TAKE PROFIT"
+                resp = close_position(symbol, pos["signal"], pos["qty"])
+
+                if "error" not in resp:
+                    del open_positions[symbol]
+                    pnl = (price - pos["entry_price"]) * pos["qty"]
+                    if pos["signal"] == "SELL":
+                        pnl = -pnl
+                    pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+                    await app.bot.send_message(
+                        chat_id=TELEGRAM_CHAT_ID,
+                        text=(
+                            f"{reason} colpito!\n\n"
+                            f"*{pos['signal']} {symbol}*\n"
+                            f"Entry: `${pos['entry_price']:,.4f}`\n"
+                            f"Exit: `${price:,.4f}`\n"
+                            f"{pnl_emoji} P&L: `${pnl:+.4f}`"
+                        ),
+                        parse_mode="Markdown"
+                    )
+                    logger.info(f"{reason} {symbol} @ {price} | PnL={pnl:+.4f}")
+                else:
+                    logger.error(f"Errore chiusura {reason} {symbol}: {resp['error']}")
+
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Gestisce i bottoni Telegram."""
     query = update.callback_query
@@ -180,12 +276,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if action == "exec":
         resp = execute_order(order["symbol"], order["signal"], order["price"])
         if "error" in resp:
-            await query.edit_message_text(f"❌ Errore nell'esecuzione:\n`{resp['error']}`", parse_mode="Markdown")
+            await query.edit_message_text(
+                f"❌ Errore nell'esecuzione:\n`{resp['error']}`",
+                parse_mode="Markdown"
+            )
         else:
+            qty = round(ORDER_USDT / order["price"], 6)
+            # Registra posizione aperta per monitoraggio SL/TP
+            open_positions[order["symbol"]] = {
+                "signal":       order["signal"],
+                "entry_price":  order["price"],
+                "qty":          qty,
+                "sl":           order["sl"],
+                "tp":           order["tp"],
+                "order_id":     resp.get("result", {}).get("orderId", "N/A"),
+            }
             await query.edit_message_text(
                 f"✅ *Ordine eseguito!*\n\n"
-                f"{order['signal']} {order['symbol']} @ ${order['price']:,.4f}\n"
-                f"Order ID: `{resp.get('result', {}).get('orderId', 'N/A')}`",
+                f"{order['signal']} {order['symbol']} @ `${order['price']:,.4f}`\n"
+                f"🛑 SL: `${order['sl']:,.4f}`\n"
+                f"🎯 TP: `${order['tp']:,.4f}`\n"
+                f"🔍 Monitoraggio attivo ogni {MONITOR_INTERVAL}s",
                 parse_mode="Markdown"
             )
     else:
@@ -193,24 +304,35 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def scan_loop(app: Application) -> None:
-    """Loop principale di scansione."""
+    """Loop principale di scansione segnali."""
     await app.bot.send_message(
         chat_id=TELEGRAM_CHAT_ID,
-        text="🤖 *Bot avviato!*\nScansiono: " + ", ".join(SYMBOLS),
+        text="🤖 *Bot avviato!*\nScansiono: " + ", ".join(SYMBOLS) +
+             f"\n📐 ATR SL x{ATR_SL_MULT} | TP x{ATR_TP_MULT}",
         parse_mode="Markdown"
     )
 
     while True:
         logger.info("Scansione in corso...")
         for symbol in SYMBOLS:
+            # Salta simboli già in posizione aperta
+            if symbol in open_positions:
+                continue
             df = get_klines(symbol)
             if df is None:
                 continue
             signal = check_signal(df)
             if signal:
                 price = df.iloc[-1]["close"]
-                await send_signal(app, symbol, signal, price)
-            await asyncio.sleep(1)  # pausa tra simboli
+                atr   = calc_atr(df)
+                if signal == "BUY":
+                    sl = price - ATR_SL_MULT * atr
+                    tp = price + ATR_TP_MULT * atr
+                else:
+                    sl = price + ATR_SL_MULT * atr
+                    tp = price - ATR_TP_MULT * atr
+                await send_signal(app, symbol, signal, price, sl, tp)
+            await asyncio.sleep(1)
 
         await asyncio.sleep(SCAN_INTERVAL)
 
@@ -221,7 +343,11 @@ async def main() -> None:
 
     async with app:
         await app.start()
-        await scan_loop(app)
+        # Avvia monitor SL/TP in parallelo al loop di scansione
+        await asyncio.gather(
+            scan_loop(app),
+            monitor_positions(app),
+        )
         await app.stop()
 
 
