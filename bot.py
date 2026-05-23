@@ -1,4 +1,6 @@
 import os
+import json
+from datetime import datetime
 import asyncio
 import pandas as pd
 import numpy as np
@@ -47,6 +49,33 @@ session = HTTP(
 pending_orders: dict[str, dict] = {}
 
 # ── Posizioni aperte da monitorare per SL/TP ─────────────────────────────────
+TRADES_FILE = os.environ.get("TRADES_FILE", "/data/trades.json")
+
+def save_trade(symbol, signal, entry, exit_price, qty, reason):
+    """Salva il trade chiuso nel file JSON per il diario."""
+    try:
+        os.makedirs(os.path.dirname(TRADES_FILE), exist_ok=True)
+        try:
+            with open(TRADES_FILE) as f:
+                trades = json.load(f)
+        except Exception:
+            trades = []
+        pnl = (exit_price - entry) * qty if signal == "BUY" else (entry - exit_price) * qty
+        trades.append({
+            "symbol": symbol,
+            "signal": signal,
+            "entry_price": entry,
+            "exit_price": exit_price,
+            "qty": qty,
+            "pnl": round(pnl, 6),
+            "reason": reason,
+            "date": datetime.now().strftime("%d/%m %H:%M")
+        })
+        with open(TRADES_FILE, "w") as f:
+            json.dump(trades, f)
+    except Exception as e:
+        logger.error(f"Errore save_trade: {e}")
+
 open_positions: dict[str, dict] = {}
 # Struttura: { symbol: { signal, entry_price, qty, sl, tp, order_id } }
 
@@ -240,6 +269,7 @@ async def monitor_positions(app: Application) -> None:
 
                 if "error" not in resp:
                     del open_positions[symbol]
+                    save_trade(symbol, pos["signal"], pos["entry_price"], price, pos["qty"], reason)
                     pnl = (price - pos["entry_price"]) * pos["qty"]
                     if pos["signal"] == "SELL":
                         pnl = -pnl
