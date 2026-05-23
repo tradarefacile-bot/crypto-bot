@@ -51,7 +51,7 @@ def get_klines(symbol: str) -> pd.DataFrame | None:
         symbol_map = {
             "BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD",
             "BNBUSDT": "BNBUSD", "XRPUSDT": "XRPUSD", "DOGEUSDT": "DOGEUSD",
-            "AVAXUSDT": "AVAXUSD", "MATICUSDT": "MATICUSD", "LINKUSDT": "LINKUSD",
+            "AVAXUSDT": "AVAXUSD", "MATICUSDT": "POLUSD", "LINKUSDT": "LINKUSD",
             "ADAUSDT": "ADAUSD"
         }
         # Mappa intervallo minuti → Kraken (in minuti)
