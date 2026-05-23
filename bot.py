@@ -43,24 +43,33 @@ pending_orders: dict[str, dict] = {}
 
 def get_klines(symbol: str) -> pd.DataFrame | None:
     """
-    Scarica le candele usando l'API pubblica Bybit (senza autenticazione).
-    Evita i blocchi IP USA per i dati di mercato.
+    Scarica le candele da Binance (API pubblica, nessun blocco geografico).
+    Bybit viene usato solo per eseguire gli ordini.
     """
     try:
-        url = "https://api.bybit.com/v5/market/kline"
+        # Binance usa intervalli diversi: "15" → "15m"
+        interval_map = {
+            "1": "1m", "3": "3m", "5": "5m", "15": "15m",
+            "30": "30m", "60": "1h", "120": "2h", "240": "4h",
+            "D": "1d", "W": "1w"
+        }
+        binance_interval = interval_map.get(INTERVAL, "15m")
+        url = "https://api.binance.com/api/v3/klines"
         params = {
-            "category": CATEGORY,
             "symbol": symbol,
-            "interval": INTERVAL,
+            "interval": binance_interval,
             "limit": 100,
         }
         resp = requests.get(url, params=params, timeout=10)
         resp.raise_for_status()
-        data = resp.json()["result"]["list"]
+        data = resp.json()
         if not data:
             return None
-        df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
-        df = df.iloc[::-1].reset_index(drop=True)  # ordine cronologico
+        df = pd.DataFrame(data, columns=[
+            "timestamp", "open", "high", "low", "close", "volume",
+            "close_time", "quote_volume", "trades", "taker_buy_base",
+            "taker_buy_quote", "ignore"
+        ])
         for col in ["open", "high", "low", "close", "volume"]:
             df[col] = df[col].astype(float)
         return df
