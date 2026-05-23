@@ -43,33 +43,45 @@ pending_orders: dict[str, dict] = {}
 
 def get_klines(symbol: str) -> pd.DataFrame | None:
     """
-    Scarica le candele da Binance (API pubblica, nessun blocco geografico).
+    Scarica le candele da Kraken (API pubblica, nessun blocco geografico).
     Bybit viene usato solo per eseguire gli ordini.
     """
     try:
-        # Binance usa intervalli diversi: "15" → "15m"
+        # Mappa simboli Bybit → Kraken
+        symbol_map = {
+            "BTCUSDT": "XBTUSD", "ETHUSDT": "ETHUSD", "SOLUSDT": "SOLUSD",
+            "BNBUSDT": "BNBUSD", "XRPUSDT": "XRPUSD", "DOGEUSDT": "DOGEUSD",
+            "AVAXUSDT": "AVAXUSD", "MATICUSDT": "MATICUSD", "LINKUSDT": "LINKUSD",
+            "ADAUSDT": "ADAUSD"
+        }
+        # Mappa intervallo minuti → Kraken (in minuti)
         interval_map = {
-            "1": "1m", "3": "3m", "5": "5m", "15": "15m",
-            "30": "30m", "60": "1h", "120": "2h", "240": "4h",
-            "D": "1d", "W": "1w"
+            "1": 1, "3": 3, "5": 5, "15": 15,
+            "30": 30, "60": 60, "120": 120, "240": 240,
+            "D": 1440, "W": 10080
         }
-        binance_interval = interval_map.get(INTERVAL, "15m")
-        url = "https://api.binance.com/api/v3/klines"
-        params = {
-            "symbol": symbol,
-            "interval": binance_interval,
-            "limit": 100,
-        }
+        kraken_symbol = symbol_map.get(symbol)
+        kraken_interval = interval_map.get(INTERVAL, 15)
+        if not kraken_symbol:
+            logger.warning(f"Simbolo {symbol} non mappato per Kraken, skip.")
+            return None
+
+        url = "https://api.kraken.com/0/public/OHLC"
+        params = {"pair": kraken_symbol, "interval": kraken_interval}
         resp = requests.get(url, params=params, timeout=10)
         resp.raise_for_status()
-        data = resp.json()
+        result = resp.json()
+        if result.get("error"):
+            logger.error(f"Kraken error {symbol}: {result['error']}")
+            return None
+
+        # Kraken restituisce {pair: [[time, open, high, low, close, vwap, volume, count]]}
+        pair_key = list(result["result"].keys())[0]
+        data = result["result"][pair_key]
         if not data:
             return None
-        df = pd.DataFrame(data, columns=[
-            "timestamp", "open", "high", "low", "close", "volume",
-            "close_time", "quote_volume", "trades", "taker_buy_base",
-            "taker_buy_quote", "ignore"
-        ])
+
+        df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "vwap", "volume", "count"])
         for col in ["open", "high", "low", "close", "volume"]:
             df[col] = df[col].astype(float)
         return df
