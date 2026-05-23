@@ -2,6 +2,7 @@ import os
 import asyncio
 import pandas as pd
 import numpy as np
+import requests
 from pybit.unified_trading import HTTP
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CallbackQueryHandler, ContextTypes
@@ -41,15 +42,21 @@ pending_orders: dict[str, dict] = {}
 
 
 def get_klines(symbol: str) -> pd.DataFrame | None:
-    """Scarica le candele da Bybit e restituisce un DataFrame."""
+    """
+    Scarica le candele usando l'API pubblica Bybit (senza autenticazione).
+    Evita i blocchi IP USA per i dati di mercato.
+    """
     try:
-        resp = session.get_kline(
-            category=CATEGORY,
-            symbol=symbol,
-            interval=INTERVAL,
-            limit=100,
-        )
-        data = resp["result"]["list"]
+        url = "https://api.bybit.com/v5/market/kline"
+        params = {
+            "category": CATEGORY,
+            "symbol": symbol,
+            "interval": INTERVAL,
+            "limit": 100,
+        }
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()["result"]["list"]
         if not data:
             return None
         df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume", "turnover"])
