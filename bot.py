@@ -367,13 +367,66 @@ async def scan_loop(app: Application) -> None:
         await asyncio.sleep(SCAN_INTERVAL)
 
 
+
+async def cmd_start(update, context):
+    await update.message.reply_text(
+        "🤖 *Crypto Signal Bot attivo!*\n\n"
+        "Comandi disponibili:\n"
+        "/status — posizioni aperte\n"
+        "/trades — ultimi 5 trade\n"
+        "/help — mostra questo messaggio\n\n"
+        f"📊 Scansiono {len(SYMBOLS)} simboli ogni {SCAN_INTERVAL}s\n"
+        f"📐 SL: ATR x{ATR_SL_MULT} | TP: ATR x{ATR_TP_MULT}",
+        parse_mode="Markdown"
+    )
+
+async def cmd_help(update, context):
+    await cmd_start(update, context)
+
+async def cmd_status(update, context):
+    if not open_positions:
+        await update.message.reply_text("📭 Nessuna posizione aperta al momento.")
+        return
+    msg = "📊 *Posizioni aperte:*\n\n"
+    for symbol, pos in open_positions.items():
+        price = get_current_price(symbol) or 0
+        pnl = (price - pos["entry_price"]) * pos["qty"]
+        if pos["signal"] == "SELL":
+            pnl = -pnl
+        emoji = "🟢" if pnl >= 0 else "🔴"
+        msg += (
+            f"{emoji} *{pos['signal']} {symbol}*\n"
+            f"Entry: `${pos['entry_price']:,.4f}` → Now: `${price:,.4f}`\n"
+            f"P&L: `${pnl:+.4f}` | SL: `${pos['sl']:,.4f}` | TP: `${pos['tp']:,.4f}`\n\n"
+        )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def cmd_trades(update, context):
+    trades = load_trades()
+    if not trades:
+        await update.message.reply_text("📭 Nessun trade ancora nel diario.")
+        return
+    last5 = trades[-5:][::-1]
+    msg = "📋 *Ultimi trade:*\n\n"
+    total_pnl = sum(t["pnl"] for t in trades)
+    wins = sum(1 for t in trades if t["pnl"] > 0)
+    for t in last5:
+        emoji = "🟢" if t["pnl"] >= 0 else "🔴"
+        msg += f"{emoji} {t['signal']} {t['symbol']} → `${t['pnl']:+.4f}` ({t['reason']}) {t['date']}\n"
+    msg += f"\n💰 P&L Totale: `${total_pnl:+.4f}`\n🎯 Win Rate: `{wins}/{len(trades)}`"
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
 async def main() -> None:
+    from telegram.ext import CommandHandler
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start",  cmd_start))
+    app.add_handler(CommandHandler("help",   cmd_help))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("trades", cmd_trades))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     async with app:
         await app.start()
-        # Avvia monitor SL/TP in parallelo al loop di scansione
         await asyncio.gather(
             scan_loop(app),
             monitor_positions(app),
