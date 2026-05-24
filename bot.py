@@ -320,18 +320,25 @@ async def cmd_trades(update, context):
     msg += f"\n💰 P&L Totale: `${total_pnl:+.4f}`\n🎯 Win Rate: `{wins}/{len(trades)}`"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-async def main() -> None:
+async def post_init(app: Application) -> None:
+    """Avvia i loop in background dopo l'init del bot."""
+    asyncio.create_task(scan_loop(app))
+    asyncio.create_task(monitor_positions(app))
+
+def main() -> None:
     from telegram.ext import CommandHandler
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TELEGRAM_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
     app.add_handler(CommandHandler("start",  cmd_start))
     app.add_handler(CommandHandler("help",   cmd_help))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("trades", cmd_trades))
     app.add_handler(CallbackQueryHandler(button_handler))
-    async with app:
-        await app.start()
-        await asyncio.gather(scan_loop(app), monitor_positions(app))
-        await app.stop()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
