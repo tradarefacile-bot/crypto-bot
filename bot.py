@@ -171,14 +171,32 @@ async def send_signal(app, symbol, signal, price, sl, tp):
     logger.info(f"Segnale inviato: {signal} {symbol} @ {price} | SL={sl:.4f} TP={tp:.4f}")
 
 
+def get_balance() -> float:
+    """Legge il saldo USDT disponibile su Bybit."""
+    try:
+        resp = session.get_wallet_balance(accountType="UNIFIED", coin="USDT")
+        bal = resp["result"]["list"][0]["coin"][0]["availableToWithdraw"]
+        return float(bal)
+    except Exception as e:
+        logger.error(f"Errore get_balance: {e}")
+        return 0.0
+
+def calc_order_usdt() -> float:
+    """Calcola la size dell'ordine in base al 2% del saldo attuale."""
+    balance = get_balance()
+    order = round(balance * RISK_PCT, 2)
+    logger.info(f"Saldo: ${balance:.2f} | Ordine: ${order:.2f} (2%)")
+    return max(order, 1.0)  # minimo $1
+
 def execute_order(symbol, signal, price):
-    qty = round(ORDER_USDT / price, 6)
+    order_usdt = calc_order_usdt()
+    qty = round(order_usdt / price, 6)
     side = "Buy" if signal == "BUY" else "Sell"
     try:
-        return session.place_order(category=CATEGORY, symbol=symbol, side=side, orderType="Market", qty=str(qty))
+        return session.place_order(category=CATEGORY, symbol=symbol, side=side, orderType="Market", qty=str(qty)), order_usdt
     except Exception as e:
         logger.error(f"Errore ordine {symbol}: {e}")
-        return {"error": str(e)}
+        return {"error": str(e)}, order_usdt
 
 
 def close_position(symbol, signal, qty):
@@ -304,6 +322,22 @@ async def cmd_status(update, context):
         msg += f"{emoji} *{pos['signal']} {symbol}*\nEntry: `${pos['entry_price']:,.4f}` → Now: `${price:,.4f}`\nP&L: `${pnl:+.4f}` | SL: `${pos['sl']:,.4f}` | TP: `${pos['tp']:,.4f}`\n\n"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
+async def cmd_saldo(update, context):
+    if not await is_authorized(update): return
+    balance = get_balance()
+    order_usdt = round(balance * RISK_PCT, 2)
+    await update.message.reply_text(
+        f"💰 *Saldo Bybit*
+
+"
+        f"USDT disponibile: `${balance:.2f}`
+"
+        f"Prossimo ordine: `${order_usdt:.2f}` (2% del saldo)
+"
+        f"Posizioni aperte: `{len(open_positions)}`",
+        parse_mode="Markdown"
+    )
+
 async def cmd_trades(update, context):
     if not await is_authorized(update): return
     trades = load_trades()
@@ -334,6 +368,7 @@ def main() -> None:
         .build()
     )
     app.add_handler(CommandHandler("start",  cmd_start))
+    app.add_handler(CommandHandler("saldo",  cmd_saldo))
     app.add_handler(CommandHandler("help",   cmd_help))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("trades", cmd_trades))
