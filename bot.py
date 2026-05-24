@@ -368,7 +368,11 @@ async def scan_loop(app: Application) -> None:
 
 
 
+async def is_authorized(update):
+    return str(update.effective_user.id) == str(TELEGRAM_CHAT_ID)
+
 async def cmd_start(update, context):
+    if not await is_authorized(update): return
     await update.message.reply_text(
         "🤖 *Crypto Signal Bot attivo!*\n\n"
         "Comandi disponibili:\n"
@@ -384,6 +388,7 @@ async def cmd_help(update, context):
     await cmd_start(update, context)
 
 async def cmd_status(update, context):
+    if not await is_authorized(update): return
     if not open_positions:
         await update.message.reply_text("📭 Nessuna posizione aperta al momento.")
         return
@@ -402,6 +407,7 @@ async def cmd_status(update, context):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def cmd_trades(update, context):
+    if not await is_authorized(update): return
     trades = load_trades()
     if not trades:
         await update.message.reply_text("📭 Nessun trade ancora nel diario.")
