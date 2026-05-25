@@ -39,6 +39,7 @@ session = HTTP(
     testnet=False,
     api_key=BYBIT_API_KEY,
     api_secret=BYBIT_API_SECRET,
+    base_url="https://api.bybit.com",
 )
 
 pending_orders: dict[str, dict] = {}
@@ -173,30 +174,18 @@ async def send_signal(app, symbol, signal, price, sl, tp):
 
 
 def get_balance() -> float:
-    """Legge il saldo USDT disponibile su Bybit."""
+    """Legge il saldo USDT disponibile su Bybit tramite pybit."""
     try:
-        import hmac, hashlib, time
-        ts = str(int(time.time() * 1000))
-        params = "accountType=UNIFIED&coin=USDT"
-        sign_str = ts + BYBIT_API_KEY + "5000" + params
-        signature = hmac.new(BYBIT_API_SECRET.encode(), sign_str.encode(), hashlib.sha256).hexdigest()
-        headers = {
-            "X-BAPI-API-KEY": BYBIT_API_KEY,
-            "X-BAPI-TIMESTAMP": ts,
-            "X-BAPI-RECV-WINDOW": "5000",
-            "X-BAPI-SIGN": signature,
-        }
-        url = "https://api.bybit.com/v5/account/wallet-balance"
-        resp = requests.get(url, params={"accountType": "UNIFIED", "coin": "USDT"}, headers=headers, timeout=10)
-        data = resp.json()
-        logger.info(f"Bybit balance response: {data}")
-        if data.get("retCode") != 0:
-            logger.error(f"Bybit balance error: {data.get('retMsg')}")
+        resp = session.get_wallet_balance(accountType="UNIFIED", coin="USDT")
+        logger.info(f"Bybit balance retCode: {resp.get('retCode')} retMsg: {resp.get('retMsg')}")
+        if resp.get("retCode") != 0:
+            logger.error(f"Bybit balance error: {resp.get('retMsg')}")
             return 0.0
-        coins = data["result"]["list"][0]["coin"]
+        coins = resp["result"]["list"][0]["coin"]
         for coin in coins:
             if coin["coin"] == "USDT":
-                return float(coin["availableToWithdraw"])
+                val = coin.get("availableToWithdraw") or coin.get("walletBalance") or "0"
+                return float(val)
         return 0.0
     except Exception as e:
         logger.error(f"Errore get_balance: {e}")
