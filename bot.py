@@ -173,39 +173,13 @@ async def send_signal(app, symbol, signal, price, sl, tp):
 
 
 def get_balance() -> float:
-    """Legge il saldo USDT da bybit.com con firma HMAC."""
-    import hmac, hashlib, time
+    """
+    Legge il saldo USDT dalla variabile d'ambiente ACCOUNT_BALANCE.
+    Aggiornala su Railway quando fai versamenti o vuoi ricalcolare.
+    """
     try:
-        ts = str(int(time.time() * 1000))
-        recv_window = "5000"
-        query = "accountType=UNIFIED&coin=USDT"
-        sign_str = ts + BYBIT_API_KEY + recv_window + query
-        signature = hmac.new(
-            BYBIT_API_SECRET.encode("utf-8"),
-            sign_str.encode("utf-8"),
-            hashlib.sha256
-        ).hexdigest()
-        headers = {
-            "X-BAPI-API-KEY": BYBIT_API_KEY,
-            "X-BAPI-TIMESTAMP": ts,
-            "X-BAPI-RECV-WINDOW": recv_window,
-            "X-BAPI-SIGN": signature,
-            "Content-Type": "application/json",
-        }
-        url = "https://api.bybit.com/v5/account/wallet-balance"
-        resp = requests.get(url, params={"accountType": "UNIFIED", "coin": "USDT"}, headers=headers, timeout=10)
-        data = resp.json()
-        logger.info(f"Balance retCode={data.get('retCode')} retMsg={data.get('retMsg')}")
-        if data.get("retCode") != 0:
-            return 0.0
-        coins = data["result"]["list"][0]["coin"]
-        for coin in coins:
-            if coin["coin"] == "USDT":
-                val = coin.get("availableToWithdraw") or coin.get("walletBalance") or "0"
-                return float(val)
-        return 0.0
-    except Exception as e:
-        logger.error(f"Errore get_balance: {e}")
+        return float(os.environ.get("ACCOUNT_BALANCE", "0"))
+    except Exception:
         return 0.0
 
 def calc_order_usdt() -> float:
