@@ -32,7 +32,8 @@ CATEGORY         = "spot"
 ATR_PERIOD       = 14
 ATR_SL_MULT      = 1.5
 ATR_TP_MULT      = 3.0
-MONITOR_INTERVAL = 30
+MONITOR_INTERVAL = 30   # secondi tra i check SL/TP
+RISK_PCT         = 0.02   # 2% del saldo per trade
 
 session = HTTP(
     testnet=False,
@@ -174,9 +175,25 @@ async def send_signal(app, symbol, signal, price, sl, tp):
 def get_balance() -> float:
     """Legge il saldo USDT disponibile su Bybit."""
     try:
-        resp = session.get_wallet_balance(accountType="UNIFIED", coin="USDT")
-        bal = resp["result"]["list"][0]["coin"][0]["availableToWithdraw"]
-        return float(bal)
+        import hmac, hashlib, time
+        ts = str(int(time.time() * 1000))
+        params = "accountType=UNIFIED&coin=USDT"
+        sign_str = ts + BYBIT_API_KEY + "5000" + params
+        signature = hmac.new(BYBIT_API_SECRET.encode(), sign_str.encode(), hashlib.sha256).hexdigest()
+        headers = {
+            "X-BAPI-API-KEY": BYBIT_API_KEY,
+            "X-BAPI-TIMESTAMP": ts,
+            "X-BAPI-RECV-WINDOW": "5000",
+            "X-BAPI-SIGN": signature,
+        }
+        url = "https://api.bybit.com/v5/account/wallet-balance"
+        resp = requests.get(url, params={"accountType": "UNIFIED", "coin": "USDT"}, headers=headers, timeout=10)
+        data = resp.json()
+        coins = data["result"]["list"][0]["coin"]
+        for coin in coins:
+            if coin["coin"] == "USDT":
+                return float(coin["availableToWithdraw"])
+        return 0.0
     except Exception as e:
         logger.error(f"Errore get_balance: {e}")
         return 0.0
