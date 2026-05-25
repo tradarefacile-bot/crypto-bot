@@ -189,6 +189,10 @@ def get_balance() -> float:
         url = "https://api.bybit.com/v5/account/wallet-balance"
         resp = requests.get(url, params={"accountType": "UNIFIED", "coin": "USDT"}, headers=headers, timeout=10)
         data = resp.json()
+        logger.info(f"Bybit balance response: {data}")
+        if data.get("retCode") != 0:
+            logger.error(f"Bybit balance error: {data.get('retMsg')}")
+            return 0.0
         coins = data["result"]["list"][0]["coin"]
         for coin in coins:
             if coin["coin"] == "USDT":
