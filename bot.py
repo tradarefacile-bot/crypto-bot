@@ -39,7 +39,6 @@ session = HTTP(
     testnet=False,
     api_key=BYBIT_API_KEY,
     api_secret=BYBIT_API_SECRET,
-    base_url="https://api.bybit.com",
 )
 
 pending_orders: dict[str, dict] = {}
@@ -174,14 +173,32 @@ async def send_signal(app, symbol, signal, price, sl, tp):
 
 
 def get_balance() -> float:
-    """Legge il saldo USDT disponibile su Bybit tramite pybit."""
+    """Legge il saldo USDT da bybit.com con firma HMAC."""
+    import hmac, hashlib, time
     try:
-        resp = session.get_wallet_balance(accountType="UNIFIED", coin="USDT")
-        logger.info(f"Bybit balance retCode: {resp.get('retCode')} retMsg: {resp.get('retMsg')}")
-        if resp.get("retCode") != 0:
-            logger.error(f"Bybit balance error: {resp.get('retMsg')}")
+        ts = str(int(time.time() * 1000))
+        recv_window = "5000"
+        query = "accountType=UNIFIED&coin=USDT"
+        sign_str = ts + BYBIT_API_KEY + recv_window + query
+        signature = hmac.new(
+            BYBIT_API_SECRET.encode("utf-8"),
+            sign_str.encode("utf-8"),
+            hashlib.sha256
+        ).hexdigest()
+        headers = {
+            "X-BAPI-API-KEY": BYBIT_API_KEY,
+            "X-BAPI-TIMESTAMP": ts,
+            "X-BAPI-RECV-WINDOW": recv_window,
+            "X-BAPI-SIGN": signature,
+            "Content-Type": "application/json",
+        }
+        url = "https://api.bybit.com/v5/account/wallet-balance"
+        resp = requests.get(url, params={"accountType": "UNIFIED", "coin": "USDT"}, headers=headers, timeout=10)
+        data = resp.json()
+        logger.info(f"Balance retCode={data.get('retCode')} retMsg={data.get('retMsg')}")
+        if data.get("retCode") != 0:
             return 0.0
-        coins = resp["result"]["list"][0]["coin"]
+        coins = data["result"]["list"][0]["coin"]
         for coin in coins:
             if coin["coin"] == "USDT":
                 val = coin.get("availableToWithdraw") or coin.get("walletBalance") or "0"
