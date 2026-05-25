@@ -178,7 +178,7 @@ def get_balance() -> float:
     Aggiornala su Railway quando fai versamenti o vuoi ricalcolare.
     """
     try:
-        return float(os.environ.get("ACCOUNT_BALANCE", "0"))
+        return float(os.environ.get("ACCOUNT_BALANCE", "500"))
     except Exception:
         return 0.0
 
