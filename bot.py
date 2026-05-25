@@ -327,13 +327,9 @@ async def cmd_saldo(update, context):
     balance = get_balance()
     order_usdt = round(balance * RISK_PCT, 2)
     await update.message.reply_text(
-        f"💰 *Saldo Bybit*
-
-"
-        f"USDT disponibile: `${balance:.2f}`
-"
-        f"Prossimo ordine: `${order_usdt:.2f}` (2% del saldo)
-"
+        "*Saldo Bybit*\n\n"
+        f"USDT disponibile: `${balance:.2f}`\n"
+        f"Prossimo ordine: `${order_usdt:.2f}` (2% del saldo)\n"
         f"Posizioni aperte: `{len(open_positions)}`",
         parse_mode="Markdown"
     )
