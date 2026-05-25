@@ -178,7 +178,7 @@ def get_balance() -> float:
     Aggiornala su Railway quando fai versamenti o vuoi ricalcolare.
     """
     try:
-        return float(os.environ.get("ACCOUNT_BALANCE", "500"))
+        return float(os.environ.get("ACCOUNT_BALANCE", "0"))
     except Exception:
         return 0.0
 
@@ -246,15 +246,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⚠️ Ordine già gestito o scaduto.")
         return
     if action == "exec":
-        resp = execute_order(order["symbol"], order["signal"], order["price"])
-        if "error" in resp:
+        resp, order_usdt = execute_order(order["symbol"], order["signal"], order["price"])
+        if isinstance(resp, dict) and "error" in resp:
             await query.edit_message_text(f"❌ Errore:\n`{resp['error']}`", parse_mode="Markdown")
         else:
-            qty = round(ORDER_USDT / order["price"], 6)
+            qty = round(order_usdt / order["price"], 6)
             open_positions[order["symbol"]] = {
                 "signal": order["signal"], "entry_price": order["price"],
                 "qty": qty, "sl": order["sl"], "tp": order["tp"],
-                "order_id": resp.get("result", {}).get("orderId", "N/A"),
+                "order_id": resp.get("result", {}).get("orderId", "N/A") if isinstance(resp, dict) else "N/A",
             }
             await query.edit_message_text(
                 f"✅ *Ordine eseguito!*\n\n{order['signal']} {order['symbol']} @ `${order['price']:,.4f}`\n🛑 SL: `${order['sl']:,.4f}`\n🎯 TP: `${order['tp']:,.4f}`\n🔍 Monitoraggio attivo ogni {MONITOR_INTERVAL}s",
