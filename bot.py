@@ -93,20 +93,39 @@ def load_trades():
         return []
 
 
-def save_trade(symbol, signal, entry, exit_price, qty, reason):
+def save_trade(symbol, signal, entry, exit_price, qty, reason, entry_time=None, adx=None):
     try:
         os.makedirs(os.path.dirname(TRADES_FILE), exist_ok=True)
         trades = load_trades()
         pnl = (exit_price - entry) * qty if signal == "BUY" else (entry - exit_price) * qty
+        now = datetime.now()
+        exit_time = now.strftime("%d/%m/%Y %H:%M")
+        duration = None
+        if entry_time:
+            try:
+                entry_dt = datetime.strptime(entry_time, "%d/%m/%Y %H:%M")
+                diff = now - entry_dt
+                minutes = int(diff.total_seconds() / 60)
+                duration = f"{minutes}m" if minutes < 60 else f"{minutes//60}h {minutes%60}m"
+            except:
+                duration = "N/A"
         trades.append({
-            "symbol": symbol, "signal": signal,
-            "entry_price": entry, "exit_price": exit_price,
-            "qty": qty, "pnl": round(pnl, 6),
+            "symbol": symbol,
+            "signal": signal,
+            "entry_price": entry,
+            "exit_price": exit_price,
+            "qty": qty,
+            "pnl": round(pnl, 6),
+            "pnl_pct": round((pnl / (entry * qty)) * 100, 2),
             "reason": reason,
-            "date": datetime.now().strftime("%d/%m %H:%M")
+            "entry_time": entry_time or now.strftime("%d/%m/%Y %H:%M"),
+            "exit_time": exit_time,
+            "duration": duration,
+            "adx": round(adx, 1) if adx else None,
+            "date": now.strftime("%d/%m %H:%M"),
         })
         with open(TRADES_FILE, "w") as f:
-            json.dump(trades, f)
+            json.dump(trades, f, indent=2)
     except Exception as e:
         logger.error(f"Errore save_trade: {e}")
 
@@ -273,7 +292,7 @@ def close_position(symbol, signal, qty):
         return {"error": str(e)}
 
 
-async def send_signal(app, symbol, signal, price, sl, tp):
+async def send_signal(app, symbol, signal, price, sl, tp, df=None):
     emoji = "🟢" if signal == "BUY" else "🔴"
     balance = get_balance()
     order_usdt = round(balance * RISK_PCT, 2)
@@ -287,7 +306,8 @@ async def send_signal(app, symbol, signal, price, sl, tp):
         f"Vuoi eseguire questo trade?"
     )
     order_id = f"{symbol}_{signal}_{int(asyncio.get_event_loop().time())}"
-    pending_orders[order_id] = {"symbol": symbol, "signal": signal, "price": price, "sl": sl, "tp": tp}
+    adx_val = calc_adx(df) if df is not None else None
+    pending_orders[order_id] = {"symbol": symbol, "signal": signal, "price": price, "sl": sl, "tp": tp, "adx": adx_val}
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("Esegui", callback_data=f"exec_{order_id}"),
         InlineKeyboardButton("Salta",  callback_data=f"skip_{order_id}"),
@@ -312,7 +332,8 @@ async def monitor_positions(app):
                 resp = close_position(symbol, pos["signal"], pos["qty"])
                 if "error" not in resp:
                     del open_positions[symbol]
-                    save_trade(symbol, pos["signal"], pos["entry_price"], price, pos["qty"], reason)
+                    save_trade(symbol, pos["signal"], pos["entry_price"], price, pos["qty"], reason,
+                               entry_time=pos.get("entry_time"), adx=pos.get("adx"))
                     pnl = (price - pos["entry_price"]) * pos["qty"]
                     if pos["signal"] == "SELL":
                         pnl = -pnl
@@ -341,6 +362,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             open_positions[order["symbol"]] = {
                 "signal": order["signal"], "entry_price": order["price"],
                 "qty": qty, "sl": order["sl"], "tp": order["tp"],
+                "entry_time": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                "adx": order.get("adx"),
             }
             await query.edit_message_text(
                 f"*Ordine eseguito su Kraken*\n\n{order['signal']} {order['symbol']} @ `${order['price']:,.4f}`\nSL: `${order['sl']:,.4f}`\nTP: `${order['tp']:,.4f}`",
@@ -370,7 +393,7 @@ async def scan_loop(app):
                 atr = calc_atr(df)
                 sl = price - ATR_SL_MULT * atr if signal == "BUY" else price + ATR_SL_MULT * atr
                 tp = price + ATR_TP_MULT * atr if signal == "BUY" else price - ATR_TP_MULT * atr
-                await send_signal(app, symbol, signal, price, sl, tp)
+                await send_signal(app, symbol, signal, price, sl, tp, df=df)
             await asyncio.sleep(1)
         await asyncio.sleep(SCAN_INTERVAL)
 
