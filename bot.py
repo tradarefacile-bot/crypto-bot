@@ -54,6 +54,8 @@ ATR_PERIOD       = 14
 ATR_SL_MULT      = 1.5
 ATR_TP_MULT      = 3.0
 MONITOR_INTERVAL = 30
+ADX_PERIOD       = 14   # periodo ADX
+ADX_THRESHOLD    = 25   # soglia trend: >25 = trend forte, <25 = laterale
 
 TRADES_FILE = os.environ.get("TRADES_FILE", "/data/trades.json")
 
@@ -160,6 +162,39 @@ def calc_atr(df: pd.DataFrame) -> float:
     return tr.rolling(ATR_PERIOD).mean().iloc[-1]
 
 
+
+def calc_adx(df: pd.DataFrame) -> float:
+    """
+    Calcola l ADX (Average Directional Index).
+    Valori > 25 indicano trend forte, < 25 mercato laterale.
+    """
+    high = df["high"]
+    low  = df["low"]
+    close = df["close"]
+
+    # True Range
+    tr = pd.concat([
+        high - low,
+        (high - close.shift(1)).abs(),
+        (low  - close.shift(1)).abs()
+    ], axis=1).max(axis=1)
+
+    # Directional Movement
+    dm_plus  = high.diff()
+    dm_minus = -low.diff()
+    dm_plus  = dm_plus.where((dm_plus > dm_minus) & (dm_plus > 0), 0)
+    dm_minus = dm_minus.where((dm_minus > dm_plus) & (dm_minus > 0), 0)
+
+    # Smoothed
+    atr_s   = tr.rolling(ADX_PERIOD).mean()
+    di_plus  = 100 * dm_plus.rolling(ADX_PERIOD).mean() / atr_s
+    di_minus = 100 * dm_minus.rolling(ADX_PERIOD).mean() / atr_s
+
+    # ADX
+    dx  = 100 * (di_plus - di_minus).abs() / (di_plus + di_minus)
+    adx = dx.rolling(ADX_PERIOD).mean()
+    return adx.iloc[-1]
+
 def check_signal(df: pd.DataFrame) -> str | None:
     df["ema_fast"] = df["close"].ewm(span=EMA_FAST, adjust=False).mean()
     df["ema_slow"] = df["close"].ewm(span=EMA_SLOW, adjust=False).mean()
@@ -167,6 +202,12 @@ def check_signal(df: pd.DataFrame) -> str | None:
     prev = df.iloc[-2]
     curr = df.iloc[-1]
     volume_spike = curr["volume"] > df["vol_ma"].iloc[-1] * VOLUME_MULT
+    # Filtro ADX — opera solo in mercato con trend forte
+    adx = calc_adx(df)
+    if adx < ADX_THRESHOLD:
+        logger.info(f"ADX={adx:.1f} < {ADX_THRESHOLD} — mercato laterale, segnale saltato")
+        return None
+
     if prev["ema_fast"] < prev["ema_slow"] and curr["ema_fast"] > curr["ema_slow"] and volume_spike:
         return "BUY"
     if prev["ema_fast"] > prev["ema_slow"] and curr["ema_fast"] < curr["ema_slow"] and volume_spike:
